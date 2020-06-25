@@ -22,6 +22,7 @@ import jittor as jt
 import jittor.transform as transform
 from resnext import CifarResNeXt
 from cifar import CIFAR10,CIFAR100
+import time
 
 class ToTensor:
     def __call__(self,img):
@@ -34,6 +35,7 @@ class ToTensor:
 def train(net,optimizer,train_data,state):
     net.train()
     loss_avg = 0.0
+    start_time = time.time()
     for batch_idx, (data, target) in enumerate(train_data):
         data, target = jt.array(data), jt.array(target)
 
@@ -42,13 +44,13 @@ def train(net,optimizer,train_data,state):
 
         loss = jt.nn.cross_entropy_loss(output, target)
         optimizer.step(loss)
-
-        if batch_idx%100==0:
-            print(batch_idx,loss)
         # exponential moving average
         loss_avg = loss_avg * 0.2 + float(loss.data[0]) * 0.8
+    end_time = time.time()
+    fps = (len(train_data)*train_data.batch_size)/(end_time-start_time)
 
     state['train_loss'] = loss_avg
+    state['train_fps'] = fps
 
 
 # test function (forward only)
@@ -56,6 +58,7 @@ def test(net,test_data,state):
     net.eval()
     loss_avg = 0.0
     correct = 0
+    start_time=time.time()
     for batch_idx, (data, target) in enumerate(test_data):
         data, target = jt.array(data), jt.array(target)
 
@@ -70,9 +73,12 @@ def test(net,test_data,state):
 
         # test loss average
         loss_avg += float(loss.data[0])
+    end_time = time.time()
+    fps = (len(test_data)*test_data.batch_size)/(end_time-start_time)
 
     state['test_loss'] = loss_avg / len(test_data)
     state['test_accuracy'] = correct / (len(test_data)*test_data.batch_size)
+    state['test_fps'] = fps
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trains ResNeXt on CIFAR', 
@@ -161,6 +167,7 @@ if __name__ == '__main__':
                 param_group['lr'] = state['learning_rate']
 
         state['epoch'] = epoch
+
         train(net,optimizer,train_data,state)
         test(net,test_data,state)
 
@@ -169,7 +176,11 @@ if __name__ == '__main__':
             net.save(os.path.join(args.save, 'CifarResNeXt.jittor'))
         log.write('%s\n' % json.dumps(state))
         log.flush()
-        print(state)
+        print("train_loss:",state['train_loss'])
+        print("test_loss:",state['test_loss'])
+        print("test_accuracy:",state["test_accuracy"])
+        print("train_fps:",state["train_fps"])
+        print("test_fps:",state["test_fps"])
         print("Best accuracy: %f" % best_accuracy)
 
     log.close()
