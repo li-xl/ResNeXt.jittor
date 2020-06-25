@@ -14,12 +14,65 @@ convert from https://github.com/prlz77/ResNeXt.pytorch
 '''
 
 import argparse
-import os
 import json
+from PIL import Image
+import os
+import numpy as np
 import jittor as jt
-from jittor import tranform
+import jittor.transform as transform
 from resnext import CifarResNeXt
 from cifar import CIFAR10,CIFAR100
+
+class ToTensor:
+    def __call__(self,img):
+        if isinstance(img, Image.Image):
+            return np.array(img).transpose((2,0,1)) / np.float32(255)
+        return img
+
+
+# train function (forward, backward, update)
+def train(net,optimizer,train_data,state):
+    net.train()
+    loss_avg = 0.0
+    for batch_idx, (data, target) in enumerate(train_data):
+        data, target = jt.array(data), jt.array(target)
+
+        # forward
+        output = net(data)
+
+        loss = jt.nn.cross_entropy_loss(output, target)
+        optimizer.step(loss)
+
+        if batch_idx%100==0:
+            print(batch_idx,loss)
+        # exponential moving average
+        loss_avg = loss_avg * 0.2 + float(loss.data[0]) * 0.8
+
+    state['train_loss'] = loss_avg
+
+
+# test function (forward only)
+def test(net,test_data,state):
+    net.eval()
+    loss_avg = 0.0
+    correct = 0
+    for batch_idx, (data, target) in enumerate(test_data):
+        data, target = jt.array(data), jt.array(target)
+
+        # forward
+        output = net(data)
+        loss = jt.nn.cross_entropy_loss(output, target)
+        
+        # accuracy
+        pred = jt.argmax(output,dim=1)[0]
+        correct += float(jt.sum(pred==target).data[0])
+
+
+        # test loss average
+        loss_avg += float(loss.data[0])
+
+    state['test_loss'] = loss_avg / len(test_data)
+    state['test_accuracy'] = correct / (len(test_data)*test_data.batch_size)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trains ResNeXt on CIFAR', 
@@ -38,7 +91,7 @@ if __name__ == '__main__':
                         help='Decrease learning rate at these epochs.')
     parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma on schedule.')
     # Checkpoints
-    parser.add_argument('--save', '-s', type=str, default='./', help='Folder to save checkpoints.')
+    parser.add_argument('--save', '-s', type=str, default='~/output_logs/ResNeXt.jittor/models', help='Folder to save checkpoints.')
     parser.add_argument('--load', '-l', type=str, help='Checkpoint path to resume / test.')
     parser.add_argument('--test', '-t', action='store_true', help='Test only flag.')
     # Architecture
@@ -50,10 +103,13 @@ if __name__ == '__main__':
     parser.add_argument('--ngpu', type=int, default=1, help='0 = CPU.')
     parser.add_argument('--prefetch', type=int, default=2, help='Pre-fetching threads.')
     # i/o
-    parser.add_argument('--log', type=str, default='./', help='Log folder.')
+    parser.add_argument('--log', type=str, default='~/output_logs/ResNeXt.jittor/logs/', help='Log folder.')
     args = parser.parse_args()
-
+    
+    jt.flags.use_cuda=1
     # Init logger
+    args.log = os.path.expanduser(args.log)
+    args.save = os.path.expanduser(args.save)
     if not os.path.isdir(args.log):
         os.makedirs(args.log)
     log = open(os.path.join(args.log, 'log.txt'), 'w')
@@ -72,10 +128,10 @@ if __name__ == '__main__':
     std = [x / 255 for x in [63.0, 62.1, 66.7]]
 
     train_transform = transform.Compose(
-        [transform.RandomHorizontalFlip(), transform.RandomCrop(32, padding=4), transform.to_tensor(),
+        [transform.RandomHorizontalFlip(), transform.RandomCrop(32), ToTensor(),
          transform.ImageNormalize(mean, std)])
     test_transform = transform.Compose(
-        [transform.to_tensor(), transform.ImageNormalize(mean, std)])
+        [ToTensor(), transform.ImageNormalize(mean, std)])
 
     if args.dataset == 'cifar10':
         train_data = CIFAR10(args.data_path, train=True, transform=train_transform, download=True,batch_size=args.batch_size,num_workers=args.prefetch)
@@ -92,52 +148,9 @@ if __name__ == '__main__':
 
     # Init model, criterion, and optimizer
     net = CifarResNeXt(args.cardinality, args.depth, nlabels, args.base_width, args.widen_factor)
-    print(net)
 
     optimizer = jt.optim.SGD(net.parameters(), state['learning_rate'], momentum=state['momentum'],
                                 weight_decay=state['decay'], nesterov=True)
-
-    # train function (forward, backward, update)
-    def train():
-        net.train()
-        loss_avg = 0.0
-        for batch_idx, (data, target) in enumerate(train_data):
-            data, target = jt.array(data), jt.array(target)
-
-            # forward
-            output = net(data)
-
-            loss = jt.nn.cross_entropy_loss(output, target)
-            optimizer.step(loss)
-
-            # exponential moving average
-            loss_avg = loss_avg * 0.2 + float(loss) * 0.8
-
-        state['train_loss'] = loss_avg
-
-
-    # test function (forward only)
-    def test():
-        net.eval()
-        loss_avg = 0.0
-        correct = 0
-        for batch_idx, (data, target) in enumerate(test_data):
-            data, target = jt.array(data), jt.array(target)
-
-            # forward
-            output = net(data)
-            loss = jt.nn.cross_entropy_loss(output, target)
-
-            # accuracy
-            pred = jt.argmax(output,dim=1)
-            correct += float(pred==target).sum()
-
-            # test loss average
-            loss_avg += float(loss)
-
-        state['test_loss'] = loss_avg / len(test_loader)
-        state['test_accuracy'] = correct / len(test_loader.dataset)
-
 
     # Main loop
     best_accuracy = 0.0
@@ -148,8 +161,9 @@ if __name__ == '__main__':
                 param_group['lr'] = state['learning_rate']
 
         state['epoch'] = epoch
-        train()
-        test()
+        train(net,optimizer,train_data,state)
+        test(net,test_data,state)
+
         if state['test_accuracy'] > best_accuracy:
             best_accuracy = state['test_accuracy']
             net.save(os.path.join(args.save, 'CifarResNeXt.jittor'))

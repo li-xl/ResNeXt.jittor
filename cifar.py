@@ -43,13 +43,11 @@ class CIFAR10(Dataset):
     ]
 
     def __init__(self, root, train=True,transform=None, target_transform=None,download=False,shuffle=True,batch_size=1,num_workers=1):
+        super(CIFAR10,self).__init__(shuffle = shuffle,batch_size=batch_size,num_workers=num_workers)
         self.root = os.path.expanduser(root)
         self.transform = transform
         self.target_transform = target_transform
         self.train = train  # training set or test set
-        self.set_attrs(shuffle = shuffle)
-        self.set_attrs(batch_size=batch_size)
-        self.set_attrs(num_workers=num_workers)
 
         if download:
             self.download()
@@ -123,8 +121,8 @@ class CIFAR10(Dataset):
         download_url_to_local(self.url, self.filename, self.root, self.tgz_md5)
         # extract file
         cwd = os.getcwd()
-        tar = tarfile.open(os.path.join(root, self.filename), "r:gz")
-        os.chdir(root)
+        tar = tarfile.open(os.path.join(self.root, self.filename), "r:gz")
+        os.chdir(self.root)
         tar.extractall()
         tar.close()
         os.chdir(cwd)
