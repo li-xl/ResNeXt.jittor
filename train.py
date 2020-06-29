@@ -23,12 +23,123 @@ import jittor.transform as transform
 from resnext import CifarResNeXt
 from cifar import CIFAR10,CIFAR100
 import time
+import random
 
 class ToTensor:
     def __call__(self,img):
         if isinstance(img, Image.Image):
             return np.array(img).transpose((2,0,1)) / np.float32(255)
         return img
+
+def constant_pad(img,padding,value):
+    if isinstance(padding, int):
+        pl = padding
+        pr = padding
+        pt = padding
+        pb = padding
+    else:
+        pl, pr, pt, pb = padding
+
+    w,h = img.size
+    p = Image.new(img.mode, (w+pl+pr, h+pt+pb), (0, 0, 0))
+    #print(p.size,img.size,img.mode,p.mode)
+    p.paste(img, (pl, pt, pl+w, pt+h))
+    return p
+
+def crop(img, top, left, height, width):
+    '''
+    Function for cropping image.
+
+    Args::
+
+        [in] img(Image.Image): Input image.
+        [in] top(int): the top boundary of the cropping box.
+        [in] left(int): the left boundary of the cropping box.
+        [in] height(int): height of the cropping box.
+        [in] width(int): width of the cropping box.
+
+    Example::
+        
+        img = Image.open(...)
+        img_ = transform.crop(img, 10, 10, 100, 100)
+    '''
+    return img.crop((left, top, left + width, top + height))
+
+class RandomCrop(object):
+    """Crop the given PIL Image at a random location.
+    Args:
+        size (sequence or int): Desired output size of the crop. If size is an
+            int instead of sequence like (h, w), a square crop (size, size) is
+            made.
+        padding (int or sequence, optional): Optional padding on each border
+            of the image. Default is None, i.e no padding. If a sequence of length
+            4 is provided, it is used to pad left, top, right, bottom borders
+            respectively. If a sequence of length 2 is provided, it is used to
+            pad left/right, top/bottom borders, respectively.
+        pad_if_needed (boolean): It will pad the image if smaller than the
+            desired size to avoid raising an exception. Since cropping is done
+            after padding, the padding seems to be done at a random offset.
+        fill: Pixel fill value for constant fill. Default is 0. If a tuple of
+            length 3, it is used to fill R, G, B channels respectively.
+            This value is only used when the padding_mode is constant
+        padding_mode: Type of padding. Should be: constant, edge, reflect or symmetric. Default is constant.
+             - constant: pads with a constant value, this value is specified with fill
+             - edge: pads with the last value on the edge of the image
+             - reflect: pads with reflection of image (without repeating the last value on the edge)
+                padding [1, 2, 3, 4] with 2 elements on both sides in reflect mode
+                will result in [3, 2, 1, 2, 3, 4, 3, 2]
+             - symmetric: pads with reflection of image (repeating the last value on the edge)
+                padding [1, 2, 3, 4] with 2 elements on both sides in symmetric mode
+                will result in [2, 1, 1, 2, 3, 4, 4, 3]
+    """
+ 
+    def __init__(self, size, padding=None, pad_if_needed=False, fill=0):
+        if isinstance(size, int):
+            self.size = (size, size)
+        else:
+            self.size = size
+        self.padding = padding
+        self.pad_if_needed = pad_if_needed
+        self.fill = fill
+ 
+    @staticmethod
+    def get_params(img, output_size):
+        """Get parameters for ``crop`` for a random crop.
+        Args:
+            img (PIL Image): Image to be cropped.
+            output_size (tuple): Expected output size of the crop.
+        Returns:
+            tuple: params (i, j, h, w) to be passed to ``crop`` for random crop.
+        """
+        w,h = img.size
+        th, tw = output_size
+        if w == tw and h == th:
+            return 0, 0, h, w
+ 
+        i = random.randint(0, h - th)
+        j = random.randint(0, w - tw)
+        return i, j, th, tw
+ 
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL Image): Image to be cropped.
+        Returns:
+            PIL Image: Cropped image.
+        """
+        if self.padding is not None:
+            img = constant_pad(img, self.padding, self.fill)
+ 
+        # pad the width if needed
+        if self.pad_if_needed and img.size[0] < self.size[1]:
+            img = constant_pad(img, (self.size[1] - img.size[0], 0), self.fill)
+        # pad the height if needed
+        if self.pad_if_needed and img.size[1] < self.size[0]:
+            img = constant_pad(img, (0, self.size[0] - img.size[1]), self.fill)
+ 
+        i, j, h, w = self.get_params(img, self.size)
+ 
+        return crop(img, i, j, h, w)
 
 
 # train function (forward, backward, update)
@@ -80,7 +191,9 @@ def test(net,test_data,state):
     state['test_accuracy'] = correct / (len(test_data)*test_data.batch_size)
     state['test_fps'] = fps
 
+
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser(description='Trains ResNeXt on CIFAR', 
             formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     # Positional arguments
@@ -92,7 +205,7 @@ if __name__ == '__main__':
     parser.add_argument('--learning_rate', '-lr', type=float, default=0.1, help='The Learning Rate.')
     parser.add_argument('--momentum', '-m', type=float, default=0.9, help='Momentum.')
     parser.add_argument('--decay', '-d', type=float, default=0.0005, help='Weight decay (L2 penalty).')
-    parser.add_argument('--test_bs', type=int, default=10)
+    parser.add_argument('--test_bs', type=int, default=128)
     parser.add_argument('--schedule', type=int, nargs='+', default=[150, 225],
                         help='Decrease learning rate at these epochs.')
     parser.add_argument('--gamma', type=float, default=0.1, help='LR is multiplied by gamma on schedule.')
@@ -134,18 +247,19 @@ if __name__ == '__main__':
     std = [x / 255 for x in [63.0, 62.1, 66.7]]
 
     train_transform = transform.Compose(
-        [transform.RandomHorizontalFlip(), transform.RandomCrop(32), ToTensor(),
+        [transform.RandomHorizontalFlip(), RandomCrop(32, padding=4), ToTensor(),
          transform.ImageNormalize(mean, std)])
     test_transform = transform.Compose(
         [ToTensor(), transform.ImageNormalize(mean, std)])
 
+    
     if args.dataset == 'cifar10':
-        train_data = CIFAR10(args.data_path, train=True, transform=train_transform, download=True,batch_size=args.batch_size,num_workers=args.prefetch)
-        test_data = CIFAR10(args.data_path, train=False, transform=test_transform, download=True,shuffle=False,num_workers=args.prefetch)
+        train_data = CIFAR10(args.data_path, train=True, transform=train_transform,batch_size=args.batch_size,num_workers=args.prefetch)
+        test_data = CIFAR10(args.data_path, train=False, transform=test_transform,shuffle=False,num_workers=args.prefetch,batch_size=args.test_bs)
         nlabels = 10
     else:
         train_data = CIFAR100(args.data_path, train=True, transform=train_transform, download=True,batch_size=args.batch_size,num_workers=args.prefetch)
-        test_data = CIFAR100(args.data_path, train=False, transform=test_transform, download=True,shuffle=False,num_workers=args.prefetch)
+        test_data = CIFAR100(args.data_path, train=False, transform=test_transform, download=True,shuffle=False,num_workers=args.prefetch,batch_size=args.test_bs)
         nlabels = 100
 
     # Init checkpoints
